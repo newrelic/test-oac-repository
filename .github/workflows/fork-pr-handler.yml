@@ -211,7 +211,7 @@ jobs:
         id: create-upstream-pr
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             console.log("Creating new PR in upstream repository...");
             try {
