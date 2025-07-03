@@ -1,9 +1,9 @@
 name: Fork PR Handler
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, closed]  # Added 'closed' to detect when PRs are merged or closed
-  
+  pull_request_target:  # Changed from pull_request to pull_request_target
+    types: [opened, synchronize]
+
 # Add explicit permissions
 permissions:
   contents: write
@@ -25,83 +25,9 @@ jobs:
           echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
           echo "PR Author: ${{ github.event.pull_request.user.login }}"
           echo "Event Type: ${{ github.event_name }}"
-          echo "Action: ${{ github.event.action }}"
-          echo "Merged: ${{ github.event.pull_request.merged }}"
           echo "::endgroup::"
       
-      # If the PR was merged or closed, handle closing the mirror PR
-      - name: Close mirror PR when fork PR is closed
-        if: github.event.action == 'closed'
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            console.log("Fork PR was closed or merged, looking for corresponding mirror PR to close...");
-            try {
-              const prBranch = '${{ github.event.pull_request.head.ref }}';
-              const wasMerged = '${{ github.event.pull_request.merged }}' === 'true';
-              
-              // Find the upstream PR that uses this branch
-              console.log(`Searching for PRs with head: ${context.repo.owner}:${prBranch}`);
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head: `${context.repo.owner}:${prBranch}`,
-                state: 'open'
-              });
-              
-              console.log(`Found ${pullRequests.length} matching PRs`);
-              
-              if (pullRequests.length > 0) {
-                const mirrorPr = pullRequests[0];
-                console.log(`Found mirror PR #${mirrorPr.number}`);
-                
-                if (wasMerged) {
-                  // If original PR was merged, close the mirror PR with a comment
-                  console.log("Original PR was merged, adding comment and closing mirror PR");
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: mirrorPr.number,
-                    body: `🔄 The original PR #${{ github.event.pull_request.number }} from @${{ github.event.pull_request.user.login }} has been merged. Closing this mirror PR.`
-                  });
-                  
-                  await github.rest.pulls.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: mirrorPr.number,
-                    state: 'closed'
-                  });
-                  console.log(`Closed mirror PR #${mirrorPr.number}`);
-                } else {
-                  // If original PR was closed without merging
-                  console.log("Original PR was closed without merging, adding comment and closing mirror PR");
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: mirrorPr.number,
-                    body: `❌ The original PR #${{ github.event.pull_request.number }} from @${{ github.event.pull_request.user.login }} was closed without merging. Closing this mirror PR.`
-                  });
-                  
-                  await github.rest.pulls.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: mirrorPr.number,
-                    state: 'closed'
-                  });
-                  console.log(`Closed mirror PR #${mirrorPr.number}`);
-                }
-              } else {
-                console.log("No matching mirror PR found to close");
-              }
-            } catch (error) {
-              console.error("Error handling PR closure:", error);
-              core.setFailed("Failed to handle PR closure: " + error.message);
-            }
-        
-      # Continue with normal workflow for open/sync events  
       - name: Initial PR Comment
-        if: github.event.action != 'closed'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -121,7 +47,6 @@ jobs:
             }
       
       - name: Checkout repo
-        if: github.event.action != 'closed'
         id: checkout
         uses: actions/checkout@v3
         with:
@@ -131,7 +56,6 @@ jobs:
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
       
       - name: Verify checkout
-        if: github.event.action != 'closed'
         run: |
           echo "::group::Repository Status"
           if [ -d .git ]; then
@@ -145,7 +69,6 @@ jobs:
           echo "::endgroup::"
       
       - name: Setup Git Identity
-        if: github.event.action != 'closed'
         run: |
           echo "::group::Git Configuration"
           git config user.name "GitHub Actions"
@@ -156,7 +79,6 @@ jobs:
           echo "::endgroup::"
       
       - name: Check if branch is synced with main
-        if: github.event.action != 'closed'
         id: check-sync
         run: |
           echo "::group::Checking branch sync status"
@@ -192,13 +114,11 @@ jobs:
           else
             echo "Branch is not synced with main"
             echo "is_synced=false" >> $GITHUB_OUTPUT
-            # Make workflow fail when branch is not synced
-            exit 1
           fi
           echo "::endgroup::"
       
       - name: Comment if not synced
-        if: failure() && github.event.action != 'closed'
+        if: steps.check-sync.outputs.is_synced == 'false'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -218,7 +138,7 @@ jobs:
             }
       
       - name: Process synced PR
-        if: github.event.action != 'closed'
+        if: steps.check-sync.outputs.is_synced == 'true'
         id: process-pr
         run: |
           echo "::group::Processing synced PR"
@@ -232,11 +152,6 @@ jobs:
           echo "PR title: $PR_TITLE"
           echo "PR author: $PR_USER"
           echo "PR number: $FORK_PR_NUMBER"
-          
-          # Get the latest commit ID from the PR branch
-          LATEST_COMMIT=$(git rev-parse HEAD)
-          echo "Latest commit ID: $LATEST_COMMIT"
-          echo "commit_id=$LATEST_COMMIT" >> $GITHUB_OUTPUT
           
           # Check if branch already exists in upstream repo
           echo "Checking if branch already exists in upstream repo..."
@@ -291,14 +206,8 @@ jobs:
           fi
           echo "::endgroup::"
       
-      - name: Get Current Time in IST
-        if: github.event.action != 'closed' && steps.process-pr.outputs.is_first_commit == 'true'
-        id: time
-        run: |
-          echo "ist_time=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_OUTPUT
-      
       - name: Create PR in upstream for first commit
-        if: github.event.action != 'closed' && steps.process-pr.outputs.is_first_commit == 'true'
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
         id: create-upstream-pr
         uses: actions/github-script@v6
         with:
@@ -307,37 +216,19 @@ jobs:
             console.log("Creating new PR in upstream repository...");
             try {
               const prBranch = '${{ github.event.pull_request.head.ref }}';
-              const prTitle = '[PREVIEW COPY] ${{ github.event.pull_request.title }}';
+              const prTitle = '${{ github.event.pull_request.title }}';
               const prBody = '${{ github.event.pull_request.body }}' || '';
               const forkOwner = '${{ github.event.pull_request.head.repo.owner.login }}';
               const forkPrNumber = '${{ github.event.pull_request.number }}';
-              const commitId = '${{ steps.process-pr.outputs.commit_id }}';
-              const istTime = '${{ steps.time.outputs.ist_time }}';
               
               console.log(`PR branch: ${prBranch}`);
               console.log(`PR title: ${prTitle}`);
               console.log(`Fork owner: ${forkOwner}`);
               console.log(`Fork PR number: ${forkPrNumber}`);
-              console.log(`Commit ID: ${commitId}`);
               
-              const newPrBody = `## 🔄 Mirrored PR Details
-
-**Original Author:** @${forkOwner}
-**Original PR Title:** ${{ github.event.pull_request.title }}
-**Created At:** ${istTime}
-**Commit ID:** \`${commitId}\`
-
-**Original PR:** #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})
-
----
-
-### Original PR Description:
-
-${prBody}
-
----
-
-> This is an automatically generated mirror of a fork PR. Changes here will not be reflected back to the original PR.`;
+              const newPrBody = `This PR mirrors changes from a fork PR by @${forkOwner}.\n\n` + 
+                              `Original PR: #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})\n\n` +
+                              prBody;
               
               console.log("Creating new PR with GitHub API...");
               const { data: newPr } = await github.rest.pulls.create({
@@ -353,23 +244,12 @@ ${prBody}
               return { prNumber: newPr.number, prUrl: newPr.html_url };
             } catch (error) {
               console.error("Error creating upstream PR:", error);
-              
-              // Fallback: If PR creation fails, just report the branch info
-              console.log("Falling back to providing branch information only...");
-              const prBranch = '${{ github.event.pull_request.head.ref }}';
-              const commitId = '${{ steps.process-pr.outputs.commit_id }}';
-              
-              // We'll return branch info instead so the next step can use it
-              return { 
-                error: error.message,
-                branchCreated: true,
-                branchName: prBranch,
-                commitId: commitId
-              };
+              core.setFailed("Failed to create upstream PR: " + error.message);
+              return { error: error.message };
             }
       
       - name: Comment on fork PR about new upstream PR
-        if: github.event.action != 'closed' && steps.process-pr.outputs.is_first_commit == 'true'
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -377,37 +257,18 @@ ${prBody}
             console.log("Adding comment to fork PR about the new upstream PR...");
             try {
               const result = ${{ steps.create-upstream-pr.outputs.result }};
-              const commitId = '${{ steps.process-pr.outputs.commit_id }}';
               
               if (result.error) {
                 console.error("Cannot comment about upstream PR due to previous error:", result.error);
-                if (result.branchCreated) {
-                  // PR creation failed, but branch was created successfully
-                  const branchName = result.branchName;
-                  console.log(`Branch created successfully: ${branchName}, but PR creation failed`);
-                  
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: context.issue.number,
-                    body: `✅ Your changes have been mirrored to our repository in branch \`${branchName}\` with commit \`${commitId}\`.
-                    
-A PR was not automatically created due to permission limitations. A repository maintainer will need to manually create a PR from this branch.
-
-You can check the branch here: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/tree/${branchName}`
-                  });
-                } else {
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: context.issue.number,
-                    body: `⚠️ We encountered an error while trying to create a mirror PR: ${result.error}`
-                  });
-                }
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: `⚠️ We encountered an error while trying to create a mirror PR: ${result.error}`
+                });
                 return;
               }
               
-              // PR was created successfully
               const upstreamPrNumber = result.prNumber;
               console.log(`Referencing upstream PR #${upstreamPrNumber} in comment`);
               
@@ -415,11 +276,7 @@ You can check the branch here: ${context.serverUrl}/${context.repo.owner}/${cont
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
-
-**Commit:** \`${commitId}\`
-
-Our workflows will run in the mirrored PR. Any updates you make to this PR will be automatically reflected in the mirror.`
+                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). Our workflows will run there.`
               });
               console.log("Comment added successfully to fork PR");
             } catch (error) {
@@ -428,7 +285,7 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
             }
       
       - name: Comment on fork PR about updates
-        if: github.event.action != 'closed' && steps.process-pr.outputs.is_first_commit == 'false'
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'false'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -436,7 +293,6 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
             console.log("Adding comment about updates to existing PR...");
             try {
               const prBranch = '${{ github.event.pull_request.head.ref }}';
-              const commitId = '${{ steps.process-pr.outputs.commit_id }}';
               console.log(`Looking for upstream PR with branch: ${prBranch}`);
               
               // Find the upstream PR that uses this branch
@@ -459,9 +315,7 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
-                  
-**Commit:** \`${commitId}\``
+                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).`
                 });
                 
                 // Also comment on the upstream PR
@@ -470,9 +324,7 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: upstreamPrNumber,
-                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.
-                  
-**New Commit:** \`${commitId}\``
+                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.`
                 });
               } else {
                 console.log("No matching upstream PR found");
@@ -480,7 +332,7 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `⚠️ Your branch has been updated in our repository with commit \`${commitId}\`, but we couldn't find an open PR for it. This might happen if the PR was closed or merged.`
+                  body: `⚠️ Your branch has been updated in our repository, but we couldn't find an open PR for it. This might happen if the PR was closed or merged.`
                 });
               }
               console.log("All comments added successfully");
@@ -496,19 +348,8 @@ Our workflows will run in the mirrored PR. Any updates you make to this PR will 
           echo "PR #${{ github.event.pull_request.number }} processing completed"
           echo "PR Author: ${{ github.event.pull_request.user.login }}"
           echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
-          
-          if [ "${{ github.event.action }}" = "closed" ]; then
-            echo "Action: PR was closed"
-            if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
-              echo "PR was merged"
-            else
-              echo "PR was closed without merging"
-            fi
-          else
-            echo "Sync Status: ${{ steps.check-sync.outputs.is_synced || 'not synced' }}"
-            if [ "${{ steps.check-sync.outputs.is_synced }}" = "true" ]; then
-              echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit || 'unknown' }}"
-              echo "Commit ID: ${{ steps.process-pr.outputs.commit_id || 'unknown' }}"
-            fi
+          echo "Sync Status: ${{ steps.check-sync.outputs.is_synced }}"
+          if [[ "${{ steps.check-sync.outputs.is_synced }}" == "true" ]]; then
+            echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit }}"
           fi
           echo "::endgroup::"
