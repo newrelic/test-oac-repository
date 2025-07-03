@@ -1,10 +1,10 @@
 name: Fork PR Handler
 
 on:
-  pull_request:
+  pull_request_target:  # Changed from pull_request to pull_request_target
     types: [opened, synchronize]
 
-# Add explicit permissions to fix the "Resource not accessible by integration" error
+# Add explicit permissions
 permissions:
   contents: write
   pull-requests: write
@@ -30,7 +30,6 @@ jobs:
       - name: Initial PR Comment
         uses: actions/github-script@v6
         with:
-          # Use GITHUB_TOKEN with permissions already set at workflow level
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             console.log("Creating initial comment on PR #" + context.issue.number);
@@ -51,6 +50,8 @@ jobs:
         id: checkout
         uses: actions/checkout@v3
         with:
+          # Important: When using pull_request_target, we need to explicitly checkout the PR head
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           token: ${{ secrets.REPO_ACCESS_TOKEN }}
       
