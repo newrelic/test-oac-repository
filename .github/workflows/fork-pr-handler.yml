@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+# Add explicit permissions to fix the "Resource not accessible by integration" error
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 jobs:
   handle-fork-pr:
     runs-on: ubuntu-latest
@@ -24,6 +30,7 @@ jobs:
       - name: Initial PR Comment
         uses: actions/github-script@v6
         with:
+          # Use GITHUB_TOKEN with permissions already set at workflow level
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             console.log("Creating initial comment on PR #" + context.issue.number);
