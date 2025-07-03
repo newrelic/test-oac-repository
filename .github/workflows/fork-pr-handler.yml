@@ -1,0 +1,347 @@
+name: Fork PR Handler
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  handle-fork-pr:
+    runs-on: ubuntu-latest
+    # Only run this workflow for PRs from forks
+    if: github.event.pull_request.head.repo.fork == true
+    
+    steps:
+      - name: Log PR event details
+        run: |
+          echo "::group::PR Event Details"
+          echo "Processing PR #${{ github.event.pull_request.number }} from ${{ github.event.pull_request.head.repo.full_name }}"
+          echo "PR Title: ${{ github.event.pull_request.title }}"
+          echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
+          echo "PR Author: ${{ github.event.pull_request.user.login }}"
+          echo "Event Type: ${{ github.event_name }}"
+          echo "::endgroup::"
+      
+      - name: Initial PR Comment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Creating initial comment on PR #" + context.issue.number);
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '👋 Thanks for your contribution! We are performing a scan of your PR...'
+              });
+              console.log("Initial comment created successfully");
+            } catch (error) {
+              console.error("Error creating initial comment:", error);
+              core.setFailed("Failed to create initial comment: " + error.message);
+            }
+      
+      - name: Checkout repo
+        id: checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+      
+      - name: Verify checkout
+        run: |
+          echo "::group::Repository Status"
+          if [ -d .git ]; then
+            echo "Repository checkout successful"
+            git status
+            git log -n 1 --oneline
+          else
+            echo "::error::Repository checkout failed"
+            exit 1
+          fi
+          echo "::endgroup::"
+      
+      - name: Setup Git Identity
+        run: |
+          echo "::group::Git Configuration"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          echo "Git identity configured:"
+          git config --get user.name
+          git config --get user.email
+          echo "::endgroup::"
+      
+      - name: Check if branch is synced with main
+        id: check-sync
+        run: |
+          echo "::group::Checking branch sync status"
+          # Fetch the main branch from the upstream repo
+          echo "Fetching main branch..."
+          git fetch origin main:main
+          if [ $? -ne 0 ]; then
+            echo "::error::Failed to fetch main branch"
+            exit 1
+          fi
+          
+          # Fetch the PR branch
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_REPO="${{ github.event.pull_request.head.repo.clone_url }}"
+          echo "Fetching PR branch $PR_BRANCH from $PR_REPO..."
+          git fetch "$PR_REPO" "$PR_BRANCH"
+          if [ $? -ne 0 ]; then
+            echo "::error::Failed to fetch PR branch"
+            exit 1
+          fi
+          
+          # Find the common ancestor commit between the PR branch and main
+          echo "Finding common ancestor between main and PR branch..."
+          COMMON_ANCESTOR=$(git merge-base main FETCH_HEAD)
+          MAIN_HEAD=$(git rev-parse main)
+          
+          echo "Common ancestor: $COMMON_ANCESTOR"
+          echo "Main HEAD: $MAIN_HEAD"
+          
+          if [ "$COMMON_ANCESTOR" = "$MAIN_HEAD" ]; then
+            echo "Branch is synced with main or ahead of it"
+            echo "is_synced=true" >> $GITHUB_OUTPUT
+          else
+            echo "Branch is not synced with main"
+            echo "is_synced=false" >> $GITHUB_OUTPUT
+          fi
+          echo "::endgroup::"
+      
+      - name: Comment if not synced
+        if: steps.check-sync.outputs.is_synced == 'false'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Branch is not synced, adding comment to PR #" + context.issue.number);
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '⚠️ Your branch is not synced with the latest changes from our main branch. Please update your fork with the latest changes before we can run our workflows.'
+              });
+              console.log("Not synced comment added successfully");
+            } catch (error) {
+              console.error("Error creating not-synced comment:", error);
+              core.setFailed("Failed to create not-synced comment: " + error.message);
+            }
+      
+      - name: Process synced PR
+        if: steps.check-sync.outputs.is_synced == 'true'
+        id: process-pr
+        run: |
+          echo "::group::Processing synced PR"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          PR_USER="${{ github.event.pull_request.user.login }}"
+          FORK_PR_NUMBER="${{ github.event.pull_request.number }}"
+          
+          echo "PR branch: $PR_BRANCH"
+          echo "PR title: $PR_TITLE"
+          echo "PR author: $PR_USER"
+          echo "PR number: $FORK_PR_NUMBER"
+          
+          # Check if branch already exists in upstream repo
+          echo "Checking if branch already exists in upstream repo..."
+          if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
+            echo "Branch already exists in upstream repo"
+            echo "is_first_commit=false" >> $GITHUB_OUTPUT
+            
+            # Fetch the fork PR branch
+            echo "Fetching the fork PR branch to temp branch..."
+            git fetch "${{ github.event.pull_request.head.repo.clone_url }}" "$PR_BRANCH:temp-$PR_BRANCH"
+            if [ $? -ne 0 ]; then
+              echo "::error::Failed to fetch fork PR branch to temp branch"
+              exit 1
+            fi
+            
+            # Update our copy of the branch
+            echo "Updating our copy of the branch..."
+            git checkout -B "$PR_BRANCH" "temp-$PR_BRANCH"
+            if [ $? -ne 0 ]; then
+              echo "::error::Failed to checkout branch"
+              exit 1
+            fi
+            
+            echo "Pushing updated branch to origin..."
+            git push origin "$PR_BRANCH"
+            if [ $? -ne 0 ]; then
+              echo "::error::Failed to push updated branch"
+              exit 1
+            fi
+            
+            echo "Updated existing branch: $PR_BRANCH"
+          else
+            echo "Branch does not exist yet in upstream repo"
+            echo "is_first_commit=true" >> $GITHUB_OUTPUT
+            
+            # Create the branch in our repo
+            echo "Creating new branch in upstream repo..."
+            git fetch "${{ github.event.pull_request.head.repo.clone_url }}" "$PR_BRANCH:$PR_BRANCH"
+            if [ $? -ne 0 ]; then
+              echo "::error::Failed to fetch and create branch"
+              exit 1
+            fi
+            
+            echo "Pushing new branch to origin..."
+            git push origin "$PR_BRANCH"
+            if [ $? -ne 0 ]; then
+              echo "::error::Failed to push new branch"
+              exit 1
+            fi
+            
+            echo "Created new branch: $PR_BRANCH"
+          fi
+          echo "::endgroup::"
+      
+      - name: Create PR in upstream for first commit
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        id: create-upstream-pr
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          script: |
+            console.log("Creating new PR in upstream repository...");
+            try {
+              const prBranch = '${{ github.event.pull_request.head.ref }}';
+              const prTitle = '${{ github.event.pull_request.title }}';
+              const prBody = '${{ github.event.pull_request.body }}' || '';
+              const forkOwner = '${{ github.event.pull_request.head.repo.owner.login }}';
+              const forkPrNumber = '${{ github.event.pull_request.number }}';
+              
+              console.log(`PR branch: ${prBranch}`);
+              console.log(`PR title: ${prTitle}`);
+              console.log(`Fork owner: ${forkOwner}`);
+              console.log(`Fork PR number: ${forkPrNumber}`);
+              
+              const newPrBody = `This PR mirrors changes from a fork PR by @${forkOwner}.\n\n` + 
+                              `Original PR: #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})\n\n` +
+                              prBody;
+              
+              console.log("Creating new PR with GitHub API...");
+              const { data: newPr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: prTitle,
+                body: newPrBody,
+                head: prBranch,
+                base: 'main'
+              });
+              
+              console.log(`Created new PR: ${newPr.number} - ${newPr.html_url}`);
+              return { prNumber: newPr.number, prUrl: newPr.html_url };
+            } catch (error) {
+              console.error("Error creating upstream PR:", error);
+              core.setFailed("Failed to create upstream PR: " + error.message);
+              return { error: error.message };
+            }
+      
+      - name: Comment on fork PR about new upstream PR
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Adding comment to fork PR about the new upstream PR...");
+            try {
+              const result = ${{ steps.create-upstream-pr.outputs.result }};
+              
+              if (result.error) {
+                console.error("Cannot comment about upstream PR due to previous error:", result.error);
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: `⚠️ We encountered an error while trying to create a mirror PR: ${result.error}`
+                });
+                return;
+              }
+              
+              const upstreamPrNumber = result.prNumber;
+              console.log(`Referencing upstream PR #${upstreamPrNumber} in comment`);
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). Our workflows will run there.`
+              });
+              console.log("Comment added successfully to fork PR");
+            } catch (error) {
+              console.error("Error commenting on fork PR:", error);
+              core.setFailed("Failed to comment on fork PR: " + error.message);
+            }
+      
+      - name: Comment on fork PR about updates
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'false'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Adding comment about updates to existing PR...");
+            try {
+              const prBranch = '${{ github.event.pull_request.head.ref }}';
+              console.log(`Looking for upstream PR with branch: ${prBranch}`);
+              
+              // Find the upstream PR that uses this branch
+              console.log(`Searching for PRs with head: ${context.repo.owner}:${prBranch}`);
+              const { data: pullRequests } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${prBranch}`,
+                state: 'open'
+              });
+              
+              console.log(`Found ${pullRequests.length} matching PRs`);
+              
+              if (pullRequests.length > 0) {
+                const upstreamPrNumber = pullRequests[0].number;
+                console.log(`Found upstream PR #${upstreamPrNumber}`);
+                
+                console.log("Adding comment to fork PR");
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).`
+                });
+                
+                // Also comment on the upstream PR
+                console.log(`Adding comment to upstream PR #${upstreamPrNumber}`);
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: upstreamPrNumber,
+                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.`
+                });
+              } else {
+                console.log("No matching upstream PR found");
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: `⚠️ Your branch has been updated in our repository, but we couldn't find an open PR for it. This might happen if the PR was closed or merged.`
+                });
+              }
+              console.log("All comments added successfully");
+            } catch (error) {
+              console.error("Error handling PR updates:", error);
+              core.setFailed("Failed to handle PR updates: " + error.message);
+            }
+      
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "::group::Workflow Summary"
+          echo "PR #${{ github.event.pull_request.number }} processing completed"
+          echo "PR Author: ${{ github.event.pull_request.user.login }}"
+          echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
+          echo "Sync Status: ${{ steps.check-sync.outputs.is_synced }}"
+          if [[ "${{ steps.check-sync.outputs.is_synced }}" == "true" ]]; then
+            echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit }}"
+          fi
+          echo "::endgroup::"
