@@ -114,11 +114,14 @@ jobs:
           else
             echo "Branch is not synced with main"
             echo "is_synced=false" >> $GITHUB_OUTPUT
+            # Make the workflow fail when not synced
+            echo "::error::PR branch is not synced with the latest main branch"
+            exit 1
           fi
           echo "::endgroup::"
       
       - name: Comment if not synced
-        if: steps.check-sync.outputs.is_synced == 'false'
+        if: failure() && contains(steps.check-sync.outputs.is_synced, 'false')
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -152,6 +155,13 @@ jobs:
           echo "PR title: $PR_TITLE"
           echo "PR author: $PR_USER"
           echo "PR number: $FORK_PR_NUMBER"
+          
+          # Get the latest commit ID from the PR
+          COMMIT_SHA="${{ github.event.pull_request.head.sha }}"
+          COMMIT_SHORT_SHA=$(echo $COMMIT_SHA | cut -c1-7)
+          echo "Latest commit ID: $COMMIT_SHA (short: $COMMIT_SHORT_SHA)"
+          echo "commit_id=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit_short_id=$COMMIT_SHORT_SHA" >> $GITHUB_OUTPUT
           
           # Check if branch already exists in upstream repo
           echo "Checking if branch already exists in upstream repo..."
@@ -206,6 +216,12 @@ jobs:
           fi
           echo "::endgroup::"
       
+      - name: Get Current Time in IST
+        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        id: time
+        run: |
+          echo "ist_time=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_OUTPUT
+      
       - name: Create PR in upstream for first commit
         if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
         id: create-upstream-pr
@@ -216,19 +232,38 @@ jobs:
             console.log("Creating new PR in upstream repository...");
             try {
               const prBranch = '${{ github.event.pull_request.head.ref }}';
-              const prTitle = '${{ github.event.pull_request.title }}';
+              const prTitle = '[PREVIEW COPY] ${{ github.event.pull_request.title }}';
               const prBody = '${{ github.event.pull_request.body }}' || '';
               const forkOwner = '${{ github.event.pull_request.head.repo.owner.login }}';
               const forkPrNumber = '${{ github.event.pull_request.number }}';
+              const istTime = '${{ steps.time.outputs.ist_time }}';
+              const commitId = '${{ github.event.pull_request.head.sha }}';
+              const shortCommitId = '${{ steps.process-pr.outputs.commit_short_id }}';
               
               console.log(`PR branch: ${prBranch}`);
               console.log(`PR title: ${prTitle}`);
               console.log(`Fork owner: ${forkOwner}`);
               console.log(`Fork PR number: ${forkPrNumber}`);
+              console.log(`Creation time: ${istTime}`);
               
-              const newPrBody = `This PR mirrors changes from a fork PR by @${forkOwner}.\n\n` + 
-                              `Original PR: #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})\n\n` +
-                              prBody;
+              const newPrBody = `
+              ## Mirror PR Summary
+              This is a preview copy of PR #${forkPrNumber} titled "${{ github.event.pull_request.title }}" by @${forkOwner}, created at ${istTime}.
+              ## Original PR Details
+              - **Original PR:** #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})
+              - **Author:** @${forkOwner}
+              - **Branch:** \`${prBranch}\`
+              - **Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))
+
+              ---
+
+              ### Original PR Description:
+
+              ${prBody}
+
+              ---
+
+              > This is an automatically generated mirror of a fork PR. Changes here will not be reflected back to the original PR.`;
               
               console.log("Creating new PR with GitHub API...");
               const { data: newPr } = await github.rest.pulls.create({
@@ -270,15 +305,31 @@ jobs:
               }
               
               const upstreamPrNumber = result.prNumber;
+              const commitId = '${{ github.event.pull_request.head.sha }}';
+              const shortCommitId = '${{ steps.process-pr.outputs.commit_short_id }}';
               console.log(`Referencing upstream PR #${upstreamPrNumber} in comment`);
               
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). Our workflows will run there.`
+                body: `
+                ✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
+                **Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))
+                Our workflows will run in the mirrored PR linked above.
+                `
               });
               console.log("Comment added successfully to fork PR");
+              
+              // Add "netflix build" comment to the new upstream PR
+              console.log("Adding 'netflix build' comment to the upstream PR");
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: upstreamPrNumber,
+                body: `netflix build`
+              });
+              console.log("'netflix build' comment added successfully to upstream PR");
             } catch (error) {
               console.error("Error commenting on fork PR:", error);
               core.setFailed("Failed to comment on fork PR: " + error.message);
@@ -308,6 +359,8 @@ jobs:
               
               if (pullRequests.length > 0) {
                 const upstreamPrNumber = pullRequests[0].number;
+                const commitId = '${{ github.event.pull_request.head.sha }}';
+                const shortCommitId = '${{ steps.process-pr.outputs.commit_short_id }}';
                 console.log(`Found upstream PR #${upstreamPrNumber}`);
                 
                 console.log("Adding comment to fork PR");
@@ -315,7 +368,9 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).`
+                  body: `
+                  ✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
+                  **Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
                 
                 // Also comment on the upstream PR
@@ -324,8 +379,20 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: upstreamPrNumber,
-                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.`
+                  body: `
+                  ♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.
+                  **New Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
+                
+                // Add "netflix build" comment to the upstream PR after updates
+                console.log("Adding 'netflix build' comment to the upstream PR");
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: upstreamPrNumber,
+                  body: `netflix build`
+                });
+                console.log("'netflix build' comment added successfully to updated upstream PR");
               } else {
                 console.log("No matching upstream PR found");
                 await github.rest.issues.createComment({
