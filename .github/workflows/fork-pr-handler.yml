@@ -83,15 +83,23 @@ jobs:
         run: |
           echo "::group::Checking branch name conflict"
           PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          EVENT_TYPE="${{ github.event.action }}"
           
+          echo "PR event type: $EVENT_TYPE"
           echo "Checking if branch '$PR_BRANCH' already exists in the upstream repository..."
           
-          if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
-            echo "::error::Branch name conflict detected. Branch '$PR_BRANCH' already exists in the upstream repository."
-            echo "branch_conflict=true" >> $GITHUB_OUTPUT
-            exit 1
+          # Only perform conflict check on PR open, not on synchronize (updates)
+          if [ "$EVENT_TYPE" = "opened" ]; then
+            if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
+              echo "::error::Branch name conflict detected. Branch '$PR_BRANCH' already exists in the upstream repository."
+              echo "branch_conflict=true" >> $GITHUB_OUTPUT
+              exit 1
+            else
+              echo "No branch name conflict detected. Branch '$PR_BRANCH' does not exist in the upstream repository."
+              echo "branch_conflict=false" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "No branch name conflict detected. Branch '$PR_BRANCH' does not exist in the upstream repository."
+            echo "This is a PR update, skipping branch name conflict check."
             echo "branch_conflict=false" >> $GITHUB_OUTPUT
           fi
           echo "::endgroup::"
