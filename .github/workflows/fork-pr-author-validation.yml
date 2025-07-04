@@ -1,4 +1,4 @@
-name: Check PR author write access
+name: Validate PR Source w/ Author Permissions
 
 permissions:
   contents: read
@@ -9,7 +9,7 @@ on:
     types: [opened, reopened, synchronize]
 
 jobs:
-  check-author-permissions:
+  validate-pr-source-based-on-author-permissions:
     runs-on: ubuntu-latest
     # Only run this check on PRs from forks
     if: github.event.pull_request.head.repo.full_name != github.repository
@@ -108,11 +108,19 @@ jobs:
               owner,
               repo,
               issue_number,
-              body: `@${author} - It appears you have write access to this repository. 
+              body: `👋 Hi @${author}, thank you for your contribution! Here's a friendly, yet important **note** from the maintainers of this repository. 
+              
+              It appears **you have write access** to this repository, [${owner}/${repo}](https://github.com/${owner}/${repo}).
               
               Please close this PR and create a new one directly from a branch in the original repository rather than from a fork. 
               
-              As a repository collaborator with write access, you can push branches directly to the repository, which is the preferred workflow.`
+              As a repository collaborator with write access, you can push branches directly to the repository, which is the preferred workflow to allow all test workflows to run on the branch. The intended workflow to contribute to this repository via a fork is that of a contributor outside the organization, or a not-so-frequent contributor inside the organization who hasn't been granted write access to the repository.
+              
+              ❌ Creating a PR from a fork of [${owner}/${repo}](https://github.com/${owner}/${repo} does not allow integration tests to run on the branch, as we've disabled runs on forked PRs owing to costs associated with virtual resources created/managed to run integration tests; without the integration tests run, we would not be able to merge your PR.
+              
+              ✅ Hence, please create a new branch in the original repository and push your changes there. Then, create a PR from that branch to the main branch of the original repository. This would allow integration tests to run and allow the maintainers of this repository to review and merge the PR.
+
+              Thank you for understanding!`
             });
             
             core.setFailed('PR author has write access to the repository. PR should be created from the original repository instead of a fork.');
