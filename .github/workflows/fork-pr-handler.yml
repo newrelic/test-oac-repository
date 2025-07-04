@@ -78,7 +78,47 @@ jobs:
           git config --get user.email
           echo "::endgroup::"
       
+      - name: Check if PR branch name exists in remote repository
+        id: branch-name-check
+        run: |
+          echo "::group::Checking branch name conflict"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          
+          echo "Checking if branch '$PR_BRANCH' already exists in the upstream repository..."
+          
+          if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
+            echo "::error::Branch name conflict detected. Branch '$PR_BRANCH' already exists in the upstream repository."
+            echo "branch_conflict=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "No branch name conflict detected. Branch '$PR_BRANCH' does not exist in the upstream repository."
+            echo "branch_conflict=false" >> $GITHUB_OUTPUT
+          fi
+          echo "::endgroup::"
+      
+      - name: Comment if branch name conflict exists
+        if: failure() && steps.branch-name-check.outputs.branch_conflict == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Branch name conflict detected, adding comment to PR #" + context.issue.number);
+            try {
+              const branchName = '${{ github.event.pull_request.head.ref }}';
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `⚠️ A branch with the name \`${branchName}\` already exists in the upstream repository. <br>This would cause conflicts when mirroring your PR. Please create a new branch with a different name and submit your PR from that branch instead.`
+              });
+              console.log("Branch name conflict comment added successfully");
+            } catch (error) {
+              console.error("Error creating branch name conflict comment:", error);
+              core.setFailed("Failed to create branch name conflict comment: " + error.message);
+            }
+      
       - name: Check if branch is synced with main
+        if: steps.branch-name-check.outputs.branch_conflict != 'true'
         id: check-sync
         run: |
           echo "::group::Checking branch sync status"
@@ -313,7 +353,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). **Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId})). Our workflows will run in the mirrored PR linked above.`
+                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).<br>**Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId})).<br>Our workflows will run in the mirrored PR linked above.`
               });
               console.log("Comment added successfully to fork PR");
               
@@ -364,7 +404,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). **Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
+                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).<br>**Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
                 
                 // Also comment on the upstream PR
@@ -373,7 +413,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: upstreamPrNumber,
-                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}. **New Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
+                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.<br>**New Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
                 
                 // Add "netflix build" comment to the upstream PR after updates
