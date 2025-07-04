@@ -1,8 +1,15 @@
+# #########################################
+# ########## DISABLED WORKFLOW ############
+# #########################################
 name: Handle Closed Fork PR
 
 on:
   pull_request_target:
     types: [closed]
+
+# Add this condition to disable the workflow
+# Remove or modify this line to re-enable the workflow
+run-name: DISABLED - ${{ github.workflow }}
 
 permissions:
   contents: write
@@ -11,9 +18,12 @@ permissions:
 
 jobs:
   close-mirror-pr:
+    # Add a condition that will always evaluate to false
+    if: ${{ false }}
     runs-on: ubuntu-latest
     # Only run this workflow for PRs from forks
-    if: github.event.pull_request.head.repo.fork == true
+    # Original condition (kept for reference)
+    # if: github.event.pull_request.head.repo.fork == true
     
     steps:
       - name: Log Closed PR details
