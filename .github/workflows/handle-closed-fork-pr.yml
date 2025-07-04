@@ -1,0 +1,168 @@
+name: Handle Closed Fork PR
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  close-mirror-pr:
+    runs-on: ubuntu-latest
+    # Only run this workflow for PRs from forks
+    if: github.event.pull_request.head.repo.fork == true
+    
+    steps:
+      - name: Log Closed PR details
+        run: |
+          echo "::group::Closed PR Details"
+          echo "Processing closed PR #${{ github.event.pull_request.number }} from ${{ github.event.pull_request.head.repo.full_name }}"
+          echo "PR Title: ${{ github.event.pull_request.title }}"
+          echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
+          echo "PR Author: ${{ github.event.pull_request.user.login }}"
+          echo "Merged: ${{ github.event.pull_request.merged }}"
+          echo "::endgroup::"
+      
+      - name: Checkout repo
+        id: checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+      
+      - name: Find and close mirror PR
+        uses: actions/github-script@v6
+        id: close-pr
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log("Finding mirror PR for closed fork PR #" + context.issue.number);
+            
+            try {
+              const prBranch = '${{ github.event.pull_request.head.ref }}';
+              const wasMerged = ${{ github.event.pull_request.merged }};
+              const closedPrNumber = ${{ github.event.pull_request.number }};
+              const prAuthor = '${{ github.event.pull_request.user.login }}';
+              
+              console.log(`Looking for mirror PR with branch: ${prBranch}`);
+              console.log(`Original PR was ${wasMerged ? "merged" : "closed without merging"}`);
+              
+              // Find the upstream PR that uses this branch
+              console.log(`Searching for PRs with head: ${context.repo.owner}:${prBranch}`);
+              const { data: pullRequests } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${prBranch}`,
+                state: 'open'
+              });
+              
+              console.log(`Found ${pullRequests.length} matching mirror PRs`);
+              
+              if (pullRequests.length > 0) {
+                const mirrorPr = pullRequests[0];
+                console.log(`Found mirror PR #${mirrorPr.number}`);
+                
+                // Create the appropriate comment based on whether the original PR was merged or closed
+                const commentBody = wasMerged 
+                  ? `🔄 The original PR #${closedPrNumber} from @${prAuthor} has been merged. Closing this mirror PR.`
+                  : `❌ The original PR #${closedPrNumber} from @${prAuthor} was closed without merging. Closing this mirror PR.`;
+                
+                // Add a comment explaining why the mirror PR is being closed
+                console.log(`Adding closing comment to mirror PR #${mirrorPr.number}`);
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: mirrorPr.number,
+                  body: commentBody
+                });
+                console.log("Comment added successfully");
+                
+                // Close the mirror PR
+                console.log(`Closing mirror PR #${mirrorPr.number}`);
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: mirrorPr.number,
+                  state: 'closed'
+                });
+                console.log(`Successfully closed mirror PR #${mirrorPr.number}`);
+                
+                return { success: true, prNumber: mirrorPr.number };
+              } else {
+                console.log("No matching mirror PR found to close");
+                return { success: false, reason: "No matching mirror PR found" };
+              }
+            } catch (error) {
+              console.error("Error handling PR closure:", error);
+              core.setFailed("Failed to handle PR closure: " + error.message);
+              return { success: false, error: error.message };
+            }
+      
+      - name: Add comment to original PR about closing mirror
+        if: steps.close-pr.outputs.result && fromJSON(steps.close-pr.outputs.result).success
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const result = ${{ steps.close-pr.outputs.result }};
+            const prNumber = result.prNumber;
+            
+            try {
+              console.log(`Adding comment to original PR #${context.issue.number} about closed mirror PR`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `✅ The mirror PR #${prNumber} has been automatically closed.`
+              });
+              console.log("Comment added successfully");
+            } catch (error) {
+              console.error("Error adding comment to original PR:", error);
+              core.setFailed("Failed to add comment to original PR: " + error.message);
+            }
+      
+      - name: Handle branch cleanup
+        if: steps.close-pr.outputs.result && fromJSON(steps.close-pr.outputs.result).success
+        run: |
+          echo "::group::Branch cleanup"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          
+          echo "Checking if mirror branch '$PR_BRANCH' exists in upstream repository..."
+          if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
+            echo "Mirror branch '$PR_BRANCH' found in upstream repository"
+            
+            if [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+              echo "Original PR was merged, keeping the mirror branch for reference"
+            else
+              echo "Original PR was closed without merging, deleting the mirror branch"
+              git push origin --delete "$PR_BRANCH"
+              echo "Mirror branch '$PR_BRANCH' deleted"
+            fi
+          else
+            echo "Mirror branch '$PR_BRANCH' not found in upstream repository, no cleanup needed"
+          fi
+          echo "::endgroup::"
+      
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "::group::Workflow Summary"
+          echo "Closed PR #${{ github.event.pull_request.number }} processing completed"
+          echo "PR Author: ${{ github.event.pull_request.user.login }}"
+          echo "PR Branch: ${{ github.event.pull_request.head.ref }}"
+          echo "Merged: ${{ github.event.pull_request.merged }}"
+          
+          if [[ "${{ steps.close-pr.outputs.result }}" != "" ]]; then
+            RESULT=${{ steps.close-pr.outputs.result }}
+            if [[ "$(echo $RESULT | jq -r '.success')" == "true" ]]; then
+              echo "Mirror PR #$(echo $RESULT | jq -r '.prNumber') was successfully closed"
+            else
+              echo "Failed to close mirror PR: $(echo $RESULT | jq -r '.reason // .error')"
+            fi
+          else
+            echo "No result from close-pr step"
+          fi
+          echo "::endgroup::"
