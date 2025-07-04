@@ -313,11 +313,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `
-                ✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
-                **Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))
-                Our workflows will run in the mirrored PR linked above.
-                `
+                body: `✅ Your PR has been mirrored to our repository as PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). **Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId})). Our workflows will run in the mirrored PR linked above.`
               });
               console.log("Comment added successfully to fork PR");
               
@@ -327,7 +323,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: upstreamPrNumber,
-                body: `netflix build`
+                body: `netflix build (purposefully written typo)`
               });
               console.log("'netflix build' comment added successfully to upstream PR");
             } catch (error) {
@@ -368,9 +364,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: `
-                  ✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}).
-                  **Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
+                  body: `✅ Your updates have been mirrored to our repository in PR #${upstreamPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${upstreamPrNumber}). **Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
                 
                 // Also comment on the upstream PR
@@ -379,9 +373,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: upstreamPrNumber,
-                  body: `
-                  ♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}.
-                  **New Commit:** \`${commitId}\` ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
+                  body: `♻️ This PR has been updated with the latest changes from the fork PR #${{ github.event.pull_request.number }}. **New Commit:** ${commitId} ([${shortCommitId}](${context.payload.pull_request.head.repo.html_url}/commit/${commitId}))`
                 });
                 
                 // Add "netflix build" comment to the upstream PR after updates
@@ -390,7 +382,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: upstreamPrNumber,
-                  body: `netflix build`
+                  body: `netflix build (purposefully written typo)`
                 });
                 console.log("'netflix build' comment added successfully to updated upstream PR");
               } else {
