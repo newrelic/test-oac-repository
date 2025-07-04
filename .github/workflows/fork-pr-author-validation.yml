@@ -1,5 +1,9 @@
 name: Validate PR Source w/ Author Permissions
 
+permissions:
+  contents: read
+  pull-requests: write
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
@@ -116,8 +120,7 @@ jobs:
               
               ✅ Hence, please create a new branch in the original repository and push your changes there. Then, create a PR from that branch to the main branch of the original repository. This would allow integration tests to run and allow the maintainers of this repository to review and merge the PR.
 
-              Thank you for understanding!
-              `
+              Thank you for understanding!`
             });
             
             core.setFailed('PR author has write access to the repository. PR should be created from the original repository instead of a fork.');
