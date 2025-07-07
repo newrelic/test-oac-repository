@@ -4,9 +4,13 @@ permissions:
   contents: read
   pull-requests: write
 
-on:
-  pull_request_target:
-    types: [opened, reopened, synchronize]
+# ######
+# Commenting this portion out to prevent the current workflow from running, as it is irrelevant to the other doc preview workflows written
+# This workflow was drafted only for https://github.com/newrelic/open-install-library/pull/1242. Feel free to uncomment this to test the same
+# ######
+# on:
+#   pull_request_target:
+#     types: [opened, reopened, synchronize]
 
 jobs:
   validate-pr-source-based-on-author-permissions:
