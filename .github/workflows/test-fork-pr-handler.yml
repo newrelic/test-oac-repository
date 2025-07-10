@@ -95,58 +95,7 @@ jobs:
           echo "Git identity configured"
           echo "::endgroup::"
       
-      # REMOVED: The logic for checking event type 'opened' vs 'synchronize' is no longer applicable.
-      # The check for an existing branch is now handled entirely within the 'Process synced PR' step.
-      - name: Check if branch is synced with main
-        id: check-sync
-        run: |
-          echo "::group::Checking branch sync status"
-          git fetch origin main:main
-          
-          PR_BRANCH="${{ steps.pr-data.outputs.head_ref }}"
-          PR_REPO="${{ steps.pr-data.outputs.head_repo_clone_url }}"
-          echo "Fetching PR branch $PR_BRANCH from $PR_REPO..."
-          git fetch "$PR_REPO" "$PR_BRANCH"
-          
-          COMMON_ANCESTOR=$(git merge-base main FETCH_HEAD)
-          MAIN_HEAD=$(git rev-parse main)
-          
-          echo "Common ancestor: $COMMON_ANCESTOR"
-          echo "Main HEAD: $MAIN_HEAD"
-          
-          if [ "$COMMON_ANCESTOR" = "$MAIN_HEAD" ]; then
-            echo "Branch is synced with main or ahead of it"
-            echo "is_synced=true" >> $GITHUB_OUTPUT
-          else
-            echo "Branch is not synced with main"
-            echo "is_synced=false" >> $GITHUB_OUTPUT
-            echo "::error::PR branch is not synced with the latest main branch"
-            exit 1
-          fi
-          echo "::endgroup::"
-      
-      - name: Comment if not synced
-        if: failure() && steps.check-sync.outputs.is_synced == 'false'
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            console.log("Branch is not synced, adding comment to PR #" + context.issue.number);
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: '⚠️ Your branch is not synced with the latest changes from our main branch. Please update your fork with the latest changes before we can run our workflows.'
-              });
-              console.log("Not synced comment added successfully");
-            } catch (error) {
-              console.error("Error creating not-synced comment:", error);
-              core.setFailed("Failed to create not-synced comment: " + error.message);
-            }
-      
       - name: Process synced PR
-        if: steps.check-sync.outputs.is_synced == 'true'
         id: process-pr
         run: |
           echo "::group::Processing synced PR"
@@ -178,13 +127,13 @@ jobs:
           echo "::endgroup::"
       
       - name: Get Current Time in IST
-        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        if: steps.process-pr.outputs.is_first_commit == 'true'
         id: time
         run: |
           echo "ist_time=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_OUTPUT
       
       - name: Create PR in upstream for first commit
-        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        if: steps.process-pr.outputs.is_first_commit == 'true'
         id: create-upstream-pr
         uses: actions/github-script@v6
         with:
@@ -239,7 +188,7 @@ jobs:
             }
       
       - name: Comment on fork PR about new upstream PR
-        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'true'
+        if: steps.process-pr.outputs.is_first_commit == 'true'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -272,7 +221,7 @@ jobs:
             });
             
       - name: Comment on fork PR about updates
-        if: steps.check-sync.outputs.is_synced == 'true' && steps.process-pr.outputs.is_first_commit == 'false'
+        if: steps.process-pr.outputs.is_first_commit == 'false'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -325,8 +274,5 @@ jobs:
           echo "PR #${{ steps.pr-data.outputs.pr_number }} processing completed"
           echo "PR Author: ${{ steps.pr-data.outputs.pr_author_login }}"
           echo "PR Branch: ${{ steps.pr-data.outputs.head_ref }}"
-          echo "Sync Status: ${{ steps.check-sync.outputs.is_synced }}"
-          if [[ "${{ steps.check-sync.outputs.is_synced }}" == "true" ]]; then
-            echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit }}"
-          fi
+          echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit }}"
           echo "::endgroup::"
