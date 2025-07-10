@@ -1,6 +1,6 @@
 name: Fork PR Handler on Comment
 
-# CHANGED: The workflow now triggers when a comment is created on a PR.
+# The workflow now triggers when a comment is created on a PR.
 on:
   issue_comment:
     types: [created]
@@ -15,11 +15,11 @@ jobs:
   handle-fork-pr:
     runs-on: ubuntu-latest
     
-    # CHANGED: Conditions to check if the comment is on a PR and if the body matches the trigger phrase.
+    # Conditions to check if the comment is on a PR and if the body matches the trigger phrase.
     if: github.event.issue.pull_request && github.event.comment.body == 'netlify build fork'
     
     steps:
-      # NEW STEP: Fetch PR data since the context is now an issue_comment, not a pull_request.
+      # Fetch PR data since the context is now an issue_comment, not a pull_request.
       # This step also verifies that the PR is from a fork.
       - name: Get PR Data and Verify Fork Status
         id: pr-data
@@ -99,7 +99,9 @@ jobs:
         id: process-pr
         run: |
           echo "::group::Processing synced PR"
-          PR_BRANCH="${{ steps.pr-data.outputs.head_ref }}"
+          # CHANGED: Create the new branch name from the username and original branch name.
+          PR_BRANCH="${{ steps.pr-data.outputs.pr_author_login }}-${{ steps.pr-data.outputs.head_ref }}"
+          echo "New upstream branch name will be: $PR_BRANCH"
           
           # Get the latest commit ID from the PR data
           COMMIT_SHA="${{ steps.pr-data.outputs.head_sha }}"
@@ -107,6 +109,8 @@ jobs:
           echo "Latest commit ID: $COMMIT_SHA (short: $COMMIT_SHORT_SHA)"
           echo "commit_id=$COMMIT_SHA" >> $GITHUB_OUTPUT
           echo "commit_short_id=$COMMIT_SHORT_SHA" >> $GITHUB_OUTPUT
+          # NEW: Output the newly constructed branch name for other steps to use.
+          echo "new_branch_name=$PR_BRANCH" >> $GITHUB_OUTPUT
           
           # Check if branch already exists in upstream repo
           if git ls-remote --heads origin "refs/heads/$PR_BRANCH" | grep -q "refs/heads/$PR_BRANCH"; then
@@ -141,7 +145,9 @@ jobs:
           script: |
             console.log("Creating new PR in upstream repository...");
             try {
-              const prBranch = '${{ steps.pr-data.outputs.head_ref }}';
+              // CHANGED: Use the new combined branch name from the previous step's output.
+              const prBranch = '${{ steps.process-pr.outputs.new_branch_name }}';
+              const originalPrBranch = '${{ steps.pr-data.outputs.head_ref }}';
               const prTitle = '[PREVIEW COPY] ${{ steps.pr-data.outputs.pr_title }}';
               const prBody = '${{ steps.pr-data.outputs.pr_body }}';
               const forkOwner = '${{ steps.pr-data.outputs.pr_author_login }}';
@@ -153,11 +159,12 @@ jobs:
 
               const newPrBody = `
               ## Mirror PR Summary
-              This is a preview copy of PR #${forkPrNumber} titled "${prTitle}" by @${forkOwner}, created at ${istTime}.
+              This is a preview copy of PR #${forkPrNumber} from @${forkOwner}, created at ${istTime}.
               ## Original PR Details
               - **Original PR:** #${forkPrNumber} (${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${forkPrNumber})
               - **Author:** @${forkOwner}
-              - **Branch:** \`${prBranch}\`
+              - **Original Branch:** \`${originalPrBranch}\`
+              - **Mirrored Branch:** \`${prBranch}\`
               - **Commit:** \`${commitId}\` ([${shortCommitId}](${headRepoUrl}/commit/${commitId}))
 
               ---
@@ -175,7 +182,7 @@ jobs:
                 repo: context.repo.repo,
                 title: prTitle,
                 body: newPrBody,
-                head: prBranch,
+                head: prBranch, // This now uses the combined name like 'gaurab4163-forked2'
                 base: 'main'
               });
               
@@ -226,7 +233,8 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prBranch = '${{ steps.pr-data.outputs.head_ref }}';
+            // CHANGED: Use the new combined branch name to find the existing PR.
+            const prBranch = '${{ steps.process-pr.outputs.new_branch_name }}';
             const commitId = '${{ steps.pr-data.outputs.head_sha }}';
             const shortCommitId = '${{ steps.process-pr.outputs.commit_short_id }}';
             const headRepoUrl = '${{ steps.pr-data.outputs.head_repo_html_url }}';
@@ -273,6 +281,8 @@ jobs:
           echo "::group::Workflow Summary"
           echo "PR #${{ steps.pr-data.outputs.pr_number }} processing completed"
           echo "PR Author: ${{ steps.pr-data.outputs.pr_author_login }}"
-          echo "PR Branch: ${{ steps.pr-data.outputs.head_ref }}"
+          echo "Original PR Branch: ${{ steps.pr-data.outputs.head_ref }}"
+          # NEW: Log the new upstream branch name
+          echo "Upstream Mirrored Branch: ${{ steps.process-pr.outputs.new_branch_name }}"
           echo "First Commit: ${{ steps.process-pr.outputs.is_first_commit }}"
           echo "::endgroup::"
